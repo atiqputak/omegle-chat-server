@@ -15,7 +15,7 @@ const waitingUsers = new Set();
 const partners = new Map();
 
 function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
 }
@@ -49,11 +49,12 @@ function findPartner(ws) {
       !partners.has(candidate)
     ) {
       removeFromQueue(candidate);
+
       partners.set(ws, candidate);
       partners.set(candidate, ws);
 
-      send(ws, { type: "matched" });
-      send(candidate, { type: "matched" });
+      send(ws, { type: "matched", initiator: true });
+      send(candidate, { type: "matched", initiator: false });
       return;
     }
   }
@@ -91,14 +92,42 @@ wss.on("connection", (ws) => {
       const partner = partners.get(ws);
 
       if (partner && partner.readyState === WebSocket.OPEN) {
-        send(partner, {
-          type: "message",
-          text: text
-        });
+        send(partner, { type: "message", text });
       } else {
         send(ws, { type: "error", message: "not_matched" });
       }
 
+      return;
+    }
+
+    if (
+      data.type === "offer" ||
+      data.type === "answer" ||
+      data.type === "ice-candidate"
+    ) {
+      const partner = partners.get(ws);
+
+      if (!partner || partner.readyState !== WebSocket.OPEN) {
+        send(ws, { type: "error", message: "not_matched" });
+        return;
+      }
+
+      if (
+        data.type === "offer" &&
+        (!data.description || typeof data.description.sdp !== "string")
+      ) return;
+
+      if (
+        data.type === "answer" &&
+        (!data.description || typeof data.description.sdp !== "string")
+      ) return;
+
+      if (
+        data.type === "ice-candidate" &&
+        (!data.candidate || typeof data.candidate !== "object")
+      ) return;
+
+      send(partner, data);
       return;
     }
 
@@ -113,13 +142,8 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", () => {
-    disconnect(ws);
-  });
-
-  ws.on("error", () => {
-    disconnect(ws);
-  });
+  ws.on("close", () => disconnect(ws));
+  ws.on("error", () => disconnect(ws));
 });
 
 const PORT = process.env.PORT || 3000;
