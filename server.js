@@ -112,20 +112,26 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      if (
-        data.type === "offer" &&
-        (!data.description || typeof data.description.sdp !== "string")
-      ) return;
+      // Accept both the frontend's current format and
+      // the description format for offer/answer.
+      if (data.type === "offer") {
+        const description = data.offer || data.description;
+        if (!description || typeof description.sdp !== "string") return;
+        data = { ...data, offer: description };
+      }
 
-      if (
-        data.type === "answer" &&
-        (!data.description || typeof data.description.sdp !== "string")
-      ) return;
+      if (data.type === "answer") {
+        const description = data.answer || data.description;
+        if (!description || typeof description.sdp !== "string") return;
+        data = { ...data, answer: description };
+      }
 
       if (
         data.type === "ice-candidate" &&
         (!data.candidate || typeof data.candidate !== "object")
-      ) return;
+      ) {
+        return;
+      }
 
       send(partner, data);
       return;
