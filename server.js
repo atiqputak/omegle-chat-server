@@ -7,8 +7,12 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-app.get("/", (req, res) => {
-  res.send("OMEGLE chat server is running.");
+app.get("/", (_req, res) => {
+  res.status(200).send("OMEGLE chat server is running.");
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
 });
 
 const waitingUsers = new Set();
@@ -24,7 +28,7 @@ function removeFromQueue(ws) {
   waitingUsers.delete(ws);
 }
 
-function disconnect(ws, message = "partner_left") {
+function disconnect(ws, notify = true) {
   removeFromQueue(ws);
 
   const partner = partners.get(ws);
@@ -32,15 +36,19 @@ function disconnect(ws, message = "partner_left") {
 
   if (partner) {
     partners.delete(partner);
-    send(partner, { type: message });
+    if (notify) {
+      send(partner, { type: "partner_left" });
+    }
   }
 }
 
 function findPartner(ws) {
   if (ws.readyState !== WebSocket.OPEN) return;
 
+  // Prevent the same socket from being matched twice.
+  if (partners.has(ws)) return;
+
   removeFromQueue(ws);
-  disconnect(ws);
 
   for (const candidate of waitingUsers) {
     if (
@@ -79,6 +87,7 @@ wss.on("connection", (ws) => {
     if (!data || typeof data.type !== "string") return;
 
     if (data.type === "find") {
+      if (partners.has(ws)) disconnect(ws);
       findPartner(ws);
       return;
     }
@@ -96,7 +105,6 @@ wss.on("connection", (ws) => {
       } else {
         send(ws, { type: "error", message: "not_matched" });
       }
-
       return;
     }
 
@@ -112,39 +120,52 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Accept both the frontend's current format and
-      // the description format for offer/answer.
-      if (data.type === "offer") {
-        const description = data.offer || data.description;
-        if (!description || typeof description.sdp !== "string") return;
-        data = { ...data, offer: description };
-      }
+      if (data.type === "offer" || data.type === "answer") {
+        const description =
+          data.type === "offer"
+            ? (data.offer || data.description)
+            : (data.answer || data.description);
 
-      if (data.type === "answer") {
-        const description = data.answer || data.description;
-        if (!description || typeof description.sdp !== "string") return;
-        data = { ...data, answer: description };
+        if (
+          !description ||
+          typeof description.sdp !== "string" ||
+          !["offer", "answer"].includes(description.type)
+        ) {
+          send(ws, { type: "error", message: "invalid_description" });
+          return;
+        }
+
+        send(partner, {
+          type: data.type,
+          [data.type]: description
+        });
+        return;
       }
 
       if (
-        data.type === "ice-candidate" &&
-        (!data.candidate || typeof data.candidate !== "object")
+        !data.candidate ||
+        typeof data.candidate !== "object" ||
+        typeof data.candidate.candidate !== "string"
       ) {
         return;
       }
 
-      send(partner, data);
+      send(partner, {
+        type: "ice-candidate",
+        candidate: data.candidate
+      });
       return;
     }
 
-    if (data.type === "next" || data.type === "end") {
+    if (data.type === "next") {
       disconnect(ws);
+      findPartner(ws);
+      return;
+    }
 
-      if (data.type === "next") {
-        findPartner(ws);
-      } else {
-        send(ws, { type: "ended" });
-      }
+    if (data.type === "end") {
+      disconnect(ws);
+      send(ws, { type: "ended" });
     }
   });
 
